@@ -106,9 +106,19 @@ async function carregar(force = false) {
       supabase.from("categorias").select("*").order("created_at", { ascending: true }),
       supabase.from("contas").select("*").order("created_at", { ascending: true }),
     ]);
+    if (cats.error || cts.error) {
+      // Falha na busca (ex.: token expirando, rede instável): mantém o cache
+      // atual em vez de substituí-lo por uma lista vazia e "apagar" os dados na tela.
+      console.error(
+        "[estoque] Falha ao carregar dados, mantendo cache atual",
+        cats.error ?? cts.error,
+      );
+      emit();
+      return;
+    }
     cache = {
-      categorias: ((cats.data as LinhaCategoria[] | null) ?? []).map(mapCategoria),
-      contas: ((cts.data as LinhaConta[] | null) ?? []).map(mapConta),
+      categorias: (cats.data as LinhaCategoria[]).map(mapCategoria),
+      contas: (cts.data as LinhaConta[]).map(mapConta),
     };
     carregado = true;
     emit();
