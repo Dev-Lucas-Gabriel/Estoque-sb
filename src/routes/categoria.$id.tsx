@@ -15,7 +15,34 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { montarLinha, useEstoque, type Conta, type StatusConta } from "@/lib/estoque";
+
+type OrdenacaoContas = "EMAIL_ASC" | "RECENTES" | "ANTIGAS";
+
+const ORDENACAO_CONTAS_KEY = "estoque:ordenacao-contas";
+
+function lerOrdenacaoContas(): OrdenacaoContas {
+  if (typeof window === "undefined") return "EMAIL_ASC";
+  const v = window.localStorage.getItem(ORDENACAO_CONTAS_KEY);
+  return v === "RECENTES" || v === "ANTIGAS" ? v : "EMAIL_ASC";
+}
+
+function formatarData(timestamp: number) {
+  return new Date(timestamp).toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 export const Route = createFileRoute("/categoria/$id")({
   head: () => ({
@@ -49,14 +76,19 @@ const vazio = { email: "", senha: "", perfil: "", pin: "", obs: "" };
 
 function CategoriaPage() {
   const { id } = Route.useParams();
-  const { categorias, contas, pronto, addConta, updateConta, removeConta } = useEstoque();
+  const { categorias, contas, pronto, addContas, updateConta, removeConta } = useEstoque();
   const categoria = categorias.find((c) => c.id === id);
   const [form, setForm] = useState(vazio);
   const [qtd, setQtd] = useState("1");
   const [aberto, setAberto] = useState(false);
   const [busca, setBusca] = useState("");
   const [expandidos, setExpandidos] = useState<Record<string, boolean>>({});
+  const [ordenacao, setOrdenacao] = useState<OrdenacaoContas>(lerOrdenacaoContas);
 
+  function alterarOrdenacao(v: OrdenacaoContas) {
+    setOrdenacao(v);
+    window.localStorage.setItem(ORDENACAO_CONTAS_KEY, v);
+  }
 
   const lista = useMemo(
     () =>
@@ -65,8 +97,12 @@ function CategoriaPage() {
         .filter((c) =>
           busca.trim() ? c.email.toLowerCase().includes(busca.trim().toLowerCase()) : true,
         )
-        .sort((a, b) => a.email.localeCompare(b.email) || a.perfil.localeCompare(b.perfil)),
-    [contas, id, busca],
+        .sort((a, b) => {
+          if (ordenacao === "RECENTES") return b.criadoEm - a.criadoEm;
+          if (ordenacao === "ANTIGAS") return a.criadoEm - b.criadoEm;
+          return a.email.localeCompare(b.email) || a.perfil.localeCompare(b.perfil);
+        }),
+    [contas, id, busca, ordenacao],
   );
 
   const grupos = useMemo(() => {
@@ -79,7 +115,6 @@ function CategoriaPage() {
     return [...mapa.values()];
   }, [lista, categoria]);
 
-
   if (pronto && !categoria) throw notFound();
   if (!categoria) return <AppShell>{null}</AppShell>;
 
@@ -91,19 +126,16 @@ function CategoriaPage() {
     }
     const n = Math.min(Math.max(parseInt(qtd || "1", 10) || 1, 1), 20);
     try {
-      for (let i = 0; i < n; i++) {
-        const perfil =
-          n > 1 ? `P${String(i + 1).padStart(2, "0")}` : form.perfil.trim() || "P01";
-        await addConta({
-          categoriaId: categoria.id,
-          email: form.email.trim(),
-          senha: form.senha.trim(),
-          perfil,
-          pin: form.pin.trim(),
-          obs: form.obs.trim(),
-          status: "DISPONIVEL",
-        });
-      }
+      const novas = Array.from({ length: n }, (_, i) => ({
+        categoriaId: categoria.id,
+        email: form.email.trim(),
+        senha: form.senha.trim(),
+        perfil: n > 1 ? `P${String(i + 1).padStart(2, "0")}` : form.perfil.trim() || "P01",
+        pin: form.pin.trim(),
+        obs: form.obs.trim(),
+        status: "DISPONIVEL" as const,
+      }));
+      await addContas(novas);
     } catch {
       toast.error("Não foi possível salvar");
       return;
@@ -113,7 +145,6 @@ function CategoriaPage() {
     setAberto(false);
     toast.success(n > 1 ? `${n} perfis adicionados` : "Conta adicionada");
   }
-
 
   async function copiar(texto: string) {
     await navigator.clipboard.writeText(texto);
@@ -133,9 +164,7 @@ function CategoriaPage() {
         <div>
           <span className="text-xs font-medium tracking-widest text-accent">{categoria.tipo}</span>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight">{categoria.nome}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {lista.length} perfis listados
-          </p>
+          <p className="mt-1 text-sm text-muted-foreground">{lista.length} perfis listados</p>
         </div>
         <Dialog open={aberto} onOpenChange={setAberto}>
           <DialogTrigger asChild>
@@ -215,13 +244,24 @@ function CategoriaPage() {
         </Dialog>
       </div>
 
-      <Input
-        value={busca}
-        onChange={(e) => setBusca(e.target.value)}
-        placeholder="Filtrar contas por e-mail nesta categoria"
-        className="mb-4 max-w-md"
-      />
-
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <Input
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          placeholder="Filtrar contas por e-mail nesta categoria"
+          className="max-w-md"
+        />
+        <Select value={ordenacao} onValueChange={(v) => alterarOrdenacao(v as OrdenacaoContas)}>
+          <SelectTrigger className="w-56">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="EMAIL_ASC">Ordem alfabética</SelectItem>
+            <SelectItem value="RECENTES">Últimas adicionadas</SelectItem>
+            <SelectItem value="ANTIGAS">Mais antigas primeiro</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
 
       <div className="space-y-4">
         {lista.length === 0 && (
@@ -232,86 +272,89 @@ function CategoriaPage() {
         {grupos.map((grupo) => {
           const expandido = expandidos[grupo.email] ?? true;
           return (
-          <div key={grupo.email} className="panel overflow-hidden">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-              <button
-                onClick={() => setExpandidos((s) => ({ ...s, [grupo.email]: !expandido }))}
-                className="flex min-w-0 flex-1 items-center gap-2 text-left"
-              >
-                <ChevronDown
-                  className={`size-4 shrink-0 text-muted-foreground transition-transform ${
-                    expandido ? "" : "-rotate-90"
-                  }`}
-                />
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium">{grupo.email}</span>
-                  <span className="block truncate text-xs text-muted-foreground">
-                    {grupo.itens.length} perfil(is) · Senha: {grupo.itens[0].conta.senha}
-                    {grupo.itens[0].conta.pin ? ` · PIN: ${grupo.itens[0].conta.pin}` : ""}
-                  </span>
-                </span>
-              </button>
-              <Button size="sm" onClick={() => copiar(grupo.itens.map((i) => i.linha).join("\n"))}>
-                <CopyCheck className="size-4" /> Copiar tudo
-              </Button>
-            </div>
-            {expandido && (
-            <>
-            <pre className="linha-mono overflow-x-auto bg-background/50 px-4 py-3 text-muted-foreground">
-              {grupo.itens.map((i) => i.linha).join("\n")}
-            </pre>
-            <div className="divide-y divide-border">
-
-              {grupo.itens.map(({ conta, linha }) => (
-                <div key={conta.id} className="flex flex-wrap items-center gap-3 px-4 py-2">
-                  <p className="min-w-0 flex-1 truncate text-sm">
-                    {conta.perfil || conta.email}
-                    {conta.obs ? (
-                      <span className="text-muted-foreground"> · {conta.obs}</span>
-                    ) : null}
-                  </p>
-                  <button
-                    onClick={() =>
-                      updateConta(conta.id, {
-                        status: (conta.status === "DISPONIVEL"
-                          ? "VENDIDO"
-                          : "DISPONIVEL") as StatusConta,
-                      })
-                    }
-                    className={`rounded-full px-3 py-1 text-[11px] font-medium ${
-                      conta.status === "DISPONIVEL"
-                        ? "bg-success/20 text-success"
-                        : "bg-secondary text-muted-foreground"
+            <div key={grupo.email} className="panel overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+                <button
+                  onClick={() => setExpandidos((s) => ({ ...s, [grupo.email]: !expandido }))}
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                >
+                  <ChevronDown
+                    className={`size-4 shrink-0 text-muted-foreground transition-transform ${
+                      expandido ? "" : "-rotate-90"
                     }`}
-                  >
-                    {conta.status}
-                  </button>
-                  <Button variant="secondary" size="sm" onClick={() => copiar(linha)}>
-                    <Copy className="size-4" /> Copiar
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      removeConta(conta.id);
-                      toast.success("Conta removida");
-                    }}
-                    aria-label="Remover conta"
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
-                </div>
-              ))}
+                  />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">{grupo.email}</span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {grupo.itens.length} perfil(is) · Senha: {grupo.itens[0].conta.senha}
+                      {grupo.itens[0].conta.pin ? ` · PIN: ${grupo.itens[0].conta.pin}` : ""}
+                    </span>
+                  </span>
+                </button>
+                <Button
+                  size="sm"
+                  onClick={() => copiar(grupo.itens.map((i) => i.linha).join("\n"))}
+                >
+                  <CopyCheck className="size-4" /> Copiar tudo
+                </Button>
+              </div>
+              {expandido && (
+                <>
+                  <pre className="linha-mono overflow-x-auto bg-background/50 px-4 py-3 text-muted-foreground">
+                    {grupo.itens.map((i) => i.linha).join("\n")}
+                  </pre>
+                  <div className="divide-y divide-border">
+                    {grupo.itens.map(({ conta, linha }) => (
+                      <div key={conta.id} className="flex flex-wrap items-center gap-3 px-4 py-2">
+                        <p className="min-w-0 flex-1 truncate text-sm">
+                          {conta.perfil || conta.email}
+                          {conta.obs ? (
+                            <span className="text-muted-foreground"> · {conta.obs}</span>
+                          ) : null}
+                          <span className="text-muted-foreground">
+                            {" "}
+                            · Adicionada em {formatarData(conta.criadoEm)}
+                          </span>
+                        </p>
+                        <button
+                          onClick={() =>
+                            updateConta(conta.id, {
+                              status: (conta.status === "DISPONIVEL"
+                                ? "VENDIDO"
+                                : "DISPONIVEL") as StatusConta,
+                            })
+                          }
+                          className={`rounded-full px-3 py-1 text-[11px] font-medium ${
+                            conta.status === "DISPONIVEL"
+                              ? "bg-success/20 text-success"
+                              : "bg-secondary text-muted-foreground"
+                          }`}
+                        >
+                          {conta.status}
+                        </button>
+                        <Button variant="secondary" size="sm" onClick={() => copiar(linha)}>
+                          <Copy className="size-4" /> Copiar
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            removeConta(conta.id);
+                            toast.success("Conta removida");
+                          }}
+                          aria-label="Remover conta"
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
-            </>
-            )}
-
-          </div>
           );
         })}
-
       </div>
-
     </AppShell>
   );
 }

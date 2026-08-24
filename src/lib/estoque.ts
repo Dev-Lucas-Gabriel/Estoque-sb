@@ -157,27 +157,24 @@ export function useEstoque() {
     };
   }, []);
 
-  const addCategoria = useCallback(
-    async (nome: string, tipo: TipoCategoria, template: string) => {
-      const { data: user } = await supabase.auth.getUser();
-      const { data: row, error } = await supabase
-        .from("categorias")
-        .insert({
-          nome: nome.trim(),
-          tipo,
-          template: template.trim() || TEMPLATE_PADRAO,
-          user_id: user.user?.id as string,
-        })
-        .select()
-        .single();
-      if (error || !row) throw error ?? new Error("Falha ao criar categoria");
-      const cat = mapCategoria(row as LinhaCategoria);
-      cache = { ...cache, categorias: [...cache.categorias, cat] };
-      emit();
-      return cat;
-    },
-    [],
-  );
+  const addCategoria = useCallback(async (nome: string, tipo: TipoCategoria, template: string) => {
+    const { data: user } = await supabase.auth.getUser();
+    const { data: row, error } = await supabase
+      .from("categorias")
+      .insert({
+        nome: nome.trim(),
+        tipo,
+        template: template.trim() || TEMPLATE_PADRAO,
+        user_id: user.user?.id as string,
+      })
+      .select()
+      .single();
+    if (error || !row) throw error ?? new Error("Falha ao criar categoria");
+    const cat = mapCategoria(row as LinhaCategoria);
+    cache = { ...cache, categorias: [...cache.categorias, cat] };
+    emit();
+    return cat;
+  }, []);
 
   const updateCategoria = useCallback(async (id: string, patch: Partial<Categoria>) => {
     cache = {
@@ -204,26 +201,39 @@ export function useEstoque() {
     await supabase.from("categorias").delete().eq("id", id);
   }, []);
 
-  const addConta = useCallback(async (conta: Omit<Conta, "id" | "criadoEm">) => {
+  const addContas = useCallback(async (contas: Omit<Conta, "id" | "criadoEm">[]) => {
+    if (contas.length === 0) return [];
     const { data: user } = await supabase.auth.getUser();
-    const { data: row, error } = await supabase
+    const userId = user.user?.id as string;
+    const { data: rows, error } = await supabase
       .from("contas")
-      .insert({
-        categoria_id: conta.categoriaId,
-        email: conta.email,
-        senha: conta.senha,
-        perfil: conta.perfil,
-        pin: conta.pin,
-        status: conta.status,
-        obs: conta.obs,
-        user_id: user.user?.id as string,
-      })
-      .select()
-      .single();
-    if (error || !row) throw error ?? new Error("Falha ao salvar conta");
-    cache = { ...cache, contas: [...cache.contas, mapConta(row as LinhaConta)] };
+      .insert(
+        contas.map((conta) => ({
+          categoria_id: conta.categoriaId,
+          email: conta.email,
+          senha: conta.senha,
+          perfil: conta.perfil,
+          pin: conta.pin,
+          status: conta.status,
+          obs: conta.obs,
+          user_id: userId,
+        })),
+      )
+      .select();
+    if (error || !rows) throw error ?? new Error("Falha ao salvar conta");
+    const novas = (rows as LinhaConta[]).map(mapConta);
+    cache = { ...cache, contas: [...cache.contas, ...novas] };
     emit();
+    return novas;
   }, []);
+
+  const addConta = useCallback(
+    async (conta: Omit<Conta, "id" | "criadoEm">) => {
+      const [nova] = await addContas([conta]);
+      return nova;
+    },
+    [addContas],
+  );
 
   const updateConta = useCallback(async (id: string, patch: Partial<Conta>) => {
     cache = {
@@ -257,6 +267,7 @@ export function useEstoque() {
     updateCategoria,
     removeCategoria,
     addConta,
+    addContas,
     updateConta,
     removeConta,
   };

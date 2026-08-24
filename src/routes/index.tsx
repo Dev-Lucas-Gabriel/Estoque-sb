@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Lock, Pencil, Plus, Share2, Trash2, Users } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell";
@@ -17,6 +17,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
 import {
   TEMPLATE_PADRAO,
@@ -26,6 +33,15 @@ import {
   type TipoCategoria,
 } from "@/lib/estoque";
 
+type OrdenacaoCategorias = "NOME_ASC" | "RECENTES" | "ANTIGAS";
+
+const ORDENACAO_CATEGORIAS_KEY = "estoque:ordenacao-categorias";
+
+function lerOrdenacaoCategorias(): OrdenacaoCategorias {
+  if (typeof window === "undefined") return "NOME_ASC";
+  const v = window.localStorage.getItem(ORDENACAO_CATEGORIAS_KEY);
+  return v === "RECENTES" || v === "ANTIGAS" ? v : "NOME_ASC";
+}
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -56,6 +72,22 @@ function Index() {
   const [nome, setNome] = useState("");
   const [tipo, setTipo] = useState<TipoCategoria>("COMPARTILHADO");
   const [template, setTemplate] = useState(TEMPLATE_PADRAO);
+  const [ordenacao, setOrdenacao] = useState<OrdenacaoCategorias>(lerOrdenacaoCategorias);
+
+  function alterarOrdenacao(v: OrdenacaoCategorias) {
+    setOrdenacao(v);
+    window.localStorage.setItem(ORDENACAO_CATEGORIAS_KEY, v);
+  }
+
+  const categoriasOrdenadas = useMemo(() => {
+    const copia = [...categorias];
+    copia.sort((a, b) => {
+      if (ordenacao === "RECENTES") return b.criadoEm - a.criadoEm;
+      if (ordenacao === "ANTIGAS") return a.criadoEm - b.criadoEm;
+      return a.nome.localeCompare(b.nome) || a.criadoEm - b.criadoEm;
+    });
+    return copia;
+  }, [categorias, ordenacao]);
 
   async function criar() {
     if (!nome.trim()) {
@@ -74,7 +106,6 @@ function Index() {
       toast.error("Não foi possível criar a categoria");
     }
   }
-
 
   return (
     <AppShell>
@@ -113,9 +144,7 @@ function Index() {
                   onValueChange={(v) => {
                     const novo = v as TipoCategoria;
                     setTipo(novo);
-                    setTemplate(
-                      novo === "PRIVADO" ? TEMPLATE_PADRAO_PRIVADO : TEMPLATE_PADRAO,
-                    );
+                    setTemplate(novo === "PRIVADO" ? TEMPLATE_PADRAO_PRIVADO : TEMPLATE_PADRAO);
                   }}
                   className="grid grid-cols-2 gap-3"
                 >
@@ -163,8 +192,26 @@ function Index() {
         </div>
       )}
 
+      {categorias.length > 0 && (
+        <div className="mb-4 flex justify-end">
+          <Select
+            value={ordenacao}
+            onValueChange={(v) => alterarOrdenacao(v as OrdenacaoCategorias)}
+          >
+            <SelectTrigger className="w-56">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="NOME_ASC">Ordem alfabética</SelectItem>
+              <SelectItem value="RECENTES">Últimas adicionadas</SelectItem>
+              <SelectItem value="ANTIGAS">Mais antigas primeiro</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {categorias.map((cat) => {
+        {categoriasOrdenadas.map((cat) => {
           const doCat = contas.filter((c) => c.categoriaId === cat.id);
           const disponiveis = doCat.filter((c) => c.status === "DISPONIVEL").length;
           return (
@@ -246,8 +293,7 @@ function Index() {
                     setEditando({
                       ...editando,
                       tipo: novo,
-                      template:
-                        novo === "PRIVADO" ? TEMPLATE_PADRAO_PRIVADO : TEMPLATE_PADRAO,
+                      template: novo === "PRIVADO" ? TEMPLATE_PADRAO_PRIVADO : TEMPLATE_PADRAO,
                     });
                   }}
                   className="grid grid-cols-2 gap-3"
@@ -303,7 +349,6 @@ function Index() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
     </AppShell>
   );
 }
