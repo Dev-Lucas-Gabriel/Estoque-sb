@@ -91,17 +91,41 @@ function mapConta(r: LinhaConta): Conta {
   };
 }
 
+const TAMANHO_PAGINA = 1000;
+
+// O Supabase limita cada resposta a no máximo 1000 linhas por padrão. Sem
+// paginar, qualquer conta além das primeiras 1000 (ordenadas da mais antiga
+// para a mais nova) fica de fora da busca — inclusive as recém-criadas, que
+// são justamente as últimas da lista. Isso fazia contas "sumirem" mesmo já
+// salvas no banco. Aqui buscamos em blocos até trazer tudo.
+async function buscarTodasLinhas<T>(tabela: "categorias" | "contas") {
+  const todas: T[] = [];
+  let offset = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from(tabela)
+      .select("*")
+      .order("created_at", { ascending: true })
+      .range(offset, offset + TAMANHO_PAGINA - 1);
+    if (error) return { data: null, error };
+    if (!data || data.length === 0) break;
+    todas.push(...(data as T[]));
+    if (data.length < TAMANHO_PAGINA) break;
+    offset += TAMANHO_PAGINA;
+  }
+  return { data: todas, error: null as null };
+}
+
 // Busca os dados assumindo que já existe uma sessão válida (quem decide isso
 // é o listener do onAuthStateChange em useEstoque, nunca uma checagem extra
 // de sessão feita aqui — checagens redundantes são o que causava a corrida
 // que apagava contas recém-criadas ao recarregar a página).
 async function buscarDados() {
   if (buscandoDados) return buscandoDados;
-  console.log("[estoque] buscarDados: iniciando busca");
   buscandoDados = (async () => {
     const [cats, cts] = await Promise.all([
-      supabase.from("categorias").select("*").order("created_at", { ascending: true }),
-      supabase.from("contas").select("*").order("created_at", { ascending: true }),
+      buscarTodasLinhas<LinhaCategoria>("categorias"),
+      buscarTodasLinhas<LinhaConta>("contas"),
     ]);
     if (cats.error || cts.error) {
       // Falha na busca (ex.: token expirando, rede instável): mantém o cache
@@ -112,10 +136,6 @@ async function buscarDados() {
       );
       return;
     }
-    console.log(
-      `[estoque] buscarDados: recebido ${cats.data?.length ?? 0} categorias e ${cts.data?.length ?? 0} contas`,
-      cts.data,
-    );
     cache = {
       categorias: (cats.data as LinhaCategoria[]).map(mapCategoria),
       contas: (cts.data as LinhaConta[]).map(mapConta),
@@ -159,9 +179,6 @@ export function useEstoque() {
     // inicial da página, via evento INITIAL_SESSION), então não há corrida
     // com uma checagem própria de getSession() feita em paralelo.
     const { data: sub } = supabase.auth.onAuthStateChange((_evento, sessao) => {
-      console.log(
-        `[estoque] onAuthStateChange: evento=${_evento} sessao=${sessao ? "presente (user " + sessao.user.id + ")" : "ausente"}`,
-      );
       if (!sessao) {
         cache = EMPTY;
         carregado = true;
