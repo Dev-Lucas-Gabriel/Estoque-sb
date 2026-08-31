@@ -97,9 +97,15 @@ async function carregar(force = false) {
   carregando = (async () => {
     const { data: sessao } = await supabase.auth.getSession();
     if (!sessao.session) {
-      cache = EMPTY;
-      carregado = true;
-      emit();
+      // Sem sessão detectada aqui pode ser um logout real ou apenas uma
+      // renovação de token em andamento. Se já tínhamos dados carregados,
+      // não apaga: um logout de verdade é tratado direto pelo evento
+      // SIGNED_OUT abaixo, que é a fonte confiável dessa informação.
+      if (!carregado) {
+        cache = EMPTY;
+        carregado = true;
+        emit();
+      }
       return;
     }
     const [cats, cts] = await Promise.all([
@@ -156,8 +162,14 @@ export function useEstoque() {
     sync();
     void carregar().then(sync);
     const { data: sub } = supabase.auth.onAuthStateChange((evento) => {
-      if (evento === "SIGNED_IN" || evento === "SIGNED_OUT") {
-        carregado = false;
+      if (evento === "SIGNED_OUT") {
+        // Único sinal confiável de logout real: zera o cache direto, sem
+        // depender de uma nova checagem de sessão que pode ser vítima da
+        // mesma corrida que estávamos tentando evitar.
+        cache = EMPTY;
+        carregado = true;
+        emit();
+      } else if (evento === "SIGNED_IN" || evento === "TOKEN_REFRESHED") {
         void carregar(true);
       }
     });
