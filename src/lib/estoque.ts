@@ -97,6 +97,7 @@ function mapConta(r: LinhaConta): Conta {
 // que apagava contas recém-criadas ao recarregar a página).
 async function buscarDados() {
   if (buscandoDados) return buscandoDados;
+  console.log("[estoque] buscarDados: iniciando busca");
   buscandoDados = (async () => {
     const [cats, cts] = await Promise.all([
       supabase.from("categorias").select("*").order("created_at", { ascending: true }),
@@ -111,6 +112,10 @@ async function buscarDados() {
       );
       return;
     }
+    console.log(
+      `[estoque] buscarDados: recebido ${cats.data?.length ?? 0} categorias e ${cts.data?.length ?? 0} contas`,
+      cts.data,
+    );
     cache = {
       categorias: (cats.data as LinhaCategoria[]).map(mapCategoria),
       contas: (cts.data as LinhaConta[]).map(mapConta),
@@ -154,6 +159,9 @@ export function useEstoque() {
     // inicial da página, via evento INITIAL_SESSION), então não há corrida
     // com uma checagem própria de getSession() feita em paralelo.
     const { data: sub } = supabase.auth.onAuthStateChange((_evento, sessao) => {
+      console.log(
+        `[estoque] onAuthStateChange: evento=${_evento} sessao=${sessao ? "presente (user " + sessao.user.id + ")" : "ausente"}`,
+      );
       if (!sessao) {
         cache = EMPTY;
         carregado = true;
