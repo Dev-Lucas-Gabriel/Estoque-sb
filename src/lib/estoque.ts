@@ -41,7 +41,7 @@ const EMPTY: EstoqueData = { categorias: [], contas: [] };
 const listeners = new Set<() => void>();
 let cache: EstoqueData = EMPTY;
 let carregado = false;
-let carregando: Promise<void> | null = null;
+let buscandoDados: Promise<void> | null = null;
 
 function emit() {
   listeners.forEach((l) => l());
@@ -91,23 +91,13 @@ function mapConta(r: LinhaConta): Conta {
   };
 }
 
-async function carregar(force = false) {
-  if (carregando) return carregando;
-  if (carregado && !force) return;
-  carregando = (async () => {
-    const { data: sessao } = await supabase.auth.getSession();
-    if (!sessao.session) {
-      // Sem sessão detectada aqui pode ser um logout real ou apenas uma
-      // renovação de token em andamento. Se já tínhamos dados carregados,
-      // não apaga: um logout de verdade é tratado direto pelo evento
-      // SIGNED_OUT abaixo, que é a fonte confiável dessa informação.
-      if (!carregado) {
-        cache = EMPTY;
-        carregado = true;
-        emit();
-      }
-      return;
-    }
+// Busca os dados assumindo que já existe uma sessão válida (quem decide isso
+// é o listener do onAuthStateChange em useEstoque, nunca uma checagem extra
+// de sessão feita aqui — checagens redundantes são o que causava a corrida
+// que apagava contas recém-criadas ao recarregar a página).
+async function buscarDados() {
+  if (buscandoDados) return buscandoDados;
+  buscandoDados = (async () => {
     const [cats, cts] = await Promise.all([
       supabase.from("categorias").select("*").order("created_at", { ascending: true }),
       supabase.from("contas").select("*").order("created_at", { ascending: true }),
@@ -119,7 +109,6 @@ async function carregar(force = false) {
         "[estoque] Falha ao carregar dados, mantendo cache atual",
         cats.error ?? cts.error,
       );
-      emit();
       return;
     }
     cache = {
@@ -129,9 +118,9 @@ async function carregar(force = false) {
     carregado = true;
     emit();
   })().finally(() => {
-    carregando = null;
+    buscandoDados = null;
   });
-  return carregando;
+  return buscandoDados;
 }
 
 export function limparEstoqueLocal() {
@@ -160,18 +149,18 @@ export function useEstoque() {
     };
     listeners.add(sync);
     sync();
-    void carregar().then(sync);
-    const { data: sub } = supabase.auth.onAuthStateChange((evento) => {
-      if (evento === "SIGNED_OUT") {
-        // Único sinal confiável de logout real: zera o cache direto, sem
-        // depender de uma nova checagem de sessão que pode ser vítima da
-        // mesma corrida que estávamos tentando evitar.
+    // onAuthStateChange é a única fonte de verdade sobre a sessão: ele
+    // dispara sozinho com o estado já resolvido (inclusive no carregamento
+    // inicial da página, via evento INITIAL_SESSION), então não há corrida
+    // com uma checagem própria de getSession() feita em paralelo.
+    const { data: sub } = supabase.auth.onAuthStateChange((_evento, sessao) => {
+      if (!sessao) {
         cache = EMPTY;
         carregado = true;
         emit();
-      } else if (evento === "SIGNED_IN" || evento === "TOKEN_REFRESHED") {
-        void carregar(true);
+        return;
       }
+      void buscarDados();
     });
     return () => {
       listeners.delete(sync);
