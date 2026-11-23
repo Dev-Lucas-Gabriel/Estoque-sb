@@ -52,7 +52,7 @@ const camposDeTexto = {
 interface Props {
   categoria: Categoria;
   emailsExistentes: string[];
-  onImportar: (contas: Omit<Conta, "id" | "criadoEm">[]) => Promise<void>;
+  onImportar: (contas: Omit<Conta, "id" | "criadoEm">[]) => Promise<unknown>;
 }
 
 export function ImportarContas({ categoria, emailsExistentes, onImportar }: Props) {

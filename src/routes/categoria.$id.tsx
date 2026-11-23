@@ -16,7 +16,34 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { montarLinha, useEstoque, type Conta, type StatusConta } from "@/lib/estoque";
+
+type OrdenacaoContas = "EMAIL_ASC" | "RECENTES" | "ANTIGAS";
+
+const ORDENACAO_CONTAS_KEY = "estoque:ordenacao-contas";
+
+function lerOrdenacaoContas(): OrdenacaoContas {
+  if (typeof window === "undefined") return "EMAIL_ASC";
+  const v = window.localStorage.getItem(ORDENACAO_CONTAS_KEY);
+  return v === "RECENTES" || v === "ANTIGAS" ? v : "EMAIL_ASC";
+}
+
+function formatarData(timestamp: number) {
+  return new Date(timestamp).toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 export const Route = createFileRoute("/categoria/$id")({
   head: () => ({
@@ -50,14 +77,19 @@ const vazio = { email: "", senha: "", perfil: "", pin: "", obs: "" };
 
 function CategoriaPage() {
   const { id } = Route.useParams();
-  const { categorias, contas, pronto, addConta, addContas, updateConta, removeConta } =
-    useEstoque();
+  const { categorias, contas, pronto, addContas, updateConta, removeConta } = useEstoque();
   const categoria = categorias.find((c) => c.id === id);
   const [form, setForm] = useState(vazio);
   const [qtd, setQtd] = useState("1");
   const [aberto, setAberto] = useState(false);
   const [busca, setBusca] = useState("");
   const [expandidos, setExpandidos] = useState<Record<string, boolean>>({});
+  const [ordenacao, setOrdenacao] = useState<OrdenacaoContas>(lerOrdenacaoContas);
+
+  function alterarOrdenacao(v: OrdenacaoContas) {
+    setOrdenacao(v);
+    window.localStorage.setItem(ORDENACAO_CONTAS_KEY, v);
+  }
 
   const lista = useMemo(
     () =>
@@ -66,8 +98,12 @@ function CategoriaPage() {
         .filter((c) =>
           busca.trim() ? c.email.toLowerCase().includes(busca.trim().toLowerCase()) : true,
         )
-        .sort((a, b) => a.email.localeCompare(b.email) || a.perfil.localeCompare(b.perfil)),
-    [contas, id, busca],
+        .sort((a, b) => {
+          if (ordenacao === "RECENTES") return b.criadoEm - a.criadoEm;
+          if (ordenacao === "ANTIGAS") return a.criadoEm - b.criadoEm;
+          return a.email.localeCompare(b.email) || a.perfil.localeCompare(b.perfil);
+        }),
+    [contas, id, busca, ordenacao],
   );
 
   const emailsDaCategoria = useMemo(
@@ -96,18 +132,16 @@ function CategoriaPage() {
     }
     const n = Math.min(Math.max(parseInt(qtd || "1", 10) || 1, 1), 20);
     try {
-      for (let i = 0; i < n; i++) {
-        const perfil = n > 1 ? `P${String(i + 1).padStart(2, "0")}` : form.perfil.trim() || "P01";
-        await addConta({
-          categoriaId: categoria.id,
-          email: form.email.trim(),
-          senha: form.senha.trim(),
-          perfil,
-          pin: form.pin.trim(),
-          obs: form.obs.trim(),
-          status: "DISPONIVEL",
-        });
-      }
+      const novas = Array.from({ length: n }, (_, i) => ({
+        categoriaId: categoria.id,
+        email: form.email.trim(),
+        senha: form.senha.trim(),
+        perfil: n > 1 ? `P${String(i + 1).padStart(2, "0")}` : form.perfil.trim() || "P01",
+        pin: form.pin.trim(),
+        obs: form.obs.trim(),
+        status: "DISPONIVEL" as const,
+      }));
+      await addContas(novas);
     } catch {
       toast.error("Não foi possível salvar");
       return;
@@ -223,12 +257,24 @@ function CategoriaPage() {
         </div>
       </div>
 
-      <Input
-        value={busca}
-        onChange={(e) => setBusca(e.target.value)}
-        placeholder="Filtrar contas por e-mail nesta categoria"
-        className="mb-4 max-w-md"
-      />
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <Input
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          placeholder="Filtrar contas por e-mail nesta categoria"
+          className="max-w-md"
+        />
+        <Select value={ordenacao} onValueChange={(v) => alterarOrdenacao(v as OrdenacaoContas)}>
+          <SelectTrigger className="w-56">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="EMAIL_ASC">Ordem alfabética</SelectItem>
+            <SelectItem value="RECENTES">Últimas adicionadas</SelectItem>
+            <SelectItem value="ANTIGAS">Mais antigas primeiro</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
 
       <div className="space-y-4">
         {lista.length === 0 && (
@@ -278,6 +324,10 @@ function CategoriaPage() {
                           {conta.obs ? (
                             <span className="text-muted-foreground"> · {conta.obs}</span>
                           ) : null}
+                          <span className="text-muted-foreground">
+                            {" "}
+                            · Adicionada em {formatarData(conta.criadoEm)}
+                          </span>
                         </p>
                         <button
                           onClick={() =>

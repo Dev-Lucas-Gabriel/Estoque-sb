@@ -41,7 +41,7 @@ const EMPTY: EstoqueData = { categorias: [], contas: [] };
 const listeners = new Set<() => void>();
 let cache: EstoqueData = EMPTY;
 let carregado = false;
-let carregando: Promise<void> | null = null;
+let buscandoDados: Promise<void> | null = null;
 
 function emit() {
   listeners.forEach((l) => l());
@@ -91,31 +91,61 @@ function mapConta(r: LinhaConta): Conta {
   };
 }
 
-async function carregar(force = false) {
-  if (carregando) return carregando;
-  if (carregado && !force) return;
-  carregando = (async () => {
-    const { data: sessao } = await supabase.auth.getSession();
-    if (!sessao.session) {
-      cache = EMPTY;
-      carregado = true;
-      emit();
+const TAMANHO_PAGINA = 1000;
+
+// O Supabase limita cada resposta a no máximo 1000 linhas por padrão. Sem
+// paginar, qualquer conta além das primeiras 1000 (ordenadas da mais antiga
+// para a mais nova) fica de fora da busca — inclusive as recém-criadas, que
+// são justamente as últimas da lista. Isso fazia contas "sumirem" mesmo já
+// salvas no banco. Aqui buscamos em blocos até trazer tudo.
+async function buscarTodasLinhas<T>(tabela: "categorias" | "contas") {
+  const todas: T[] = [];
+  let offset = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from(tabela)
+      .select("*")
+      .order("created_at", { ascending: true })
+      .range(offset, offset + TAMANHO_PAGINA - 1);
+    if (error) return { data: null, error };
+    if (!data || data.length === 0) break;
+    todas.push(...(data as T[]));
+    if (data.length < TAMANHO_PAGINA) break;
+    offset += TAMANHO_PAGINA;
+  }
+  return { data: todas, error: null as null };
+}
+
+// Busca os dados assumindo que já existe uma sessão válida (quem decide isso
+// é o listener do onAuthStateChange em useEstoque, nunca uma checagem extra
+// de sessão feita aqui — checagens redundantes são o que causava a corrida
+// que apagava contas recém-criadas ao recarregar a página).
+async function buscarDados() {
+  if (buscandoDados) return buscandoDados;
+  buscandoDados = (async () => {
+    const [cats, cts] = await Promise.all([
+      buscarTodasLinhas<LinhaCategoria>("categorias"),
+      buscarTodasLinhas<LinhaConta>("contas"),
+    ]);
+    if (cats.error || cts.error) {
+      // Falha na busca (ex.: token expirando, rede instável): mantém o cache
+      // atual em vez de substituí-lo por uma lista vazia e "apagar" os dados na tela.
+      console.error(
+        "[estoque] Falha ao carregar dados, mantendo cache atual",
+        cats.error ?? cts.error,
+      );
       return;
     }
-    const [cats, cts] = await Promise.all([
-      supabase.from("categorias").select("*").order("created_at", { ascending: true }),
-      supabase.from("contas").select("*").order("created_at", { ascending: true }),
-    ]);
     cache = {
-      categorias: ((cats.data as LinhaCategoria[] | null) ?? []).map(mapCategoria),
-      contas: ((cts.data as LinhaConta[] | null) ?? []).map(mapConta),
+      categorias: (cats.data as LinhaCategoria[]).map(mapCategoria),
+      contas: (cts.data as LinhaConta[]).map(mapConta),
     };
     carregado = true;
     emit();
   })().finally(() => {
-    carregando = null;
+    buscandoDados = null;
   });
-  return carregando;
+  return buscandoDados;
 }
 
 export function limparEstoqueLocal() {
@@ -144,12 +174,18 @@ export function useEstoque() {
     };
     listeners.add(sync);
     sync();
-    void carregar().then(sync);
-    const { data: sub } = supabase.auth.onAuthStateChange((evento) => {
-      if (evento === "SIGNED_IN" || evento === "SIGNED_OUT") {
-        carregado = false;
-        void carregar(true);
+    // onAuthStateChange é a única fonte de verdade sobre a sessão: ele
+    // dispara sozinho com o estado já resolvido (inclusive no carregamento
+    // inicial da página, via evento INITIAL_SESSION), então não há corrida
+    // com uma checagem própria de getSession() feita em paralelo.
+    const { data: sub } = supabase.auth.onAuthStateChange((_evento, sessao) => {
+      if (!sessao) {
+        cache = EMPTY;
+        carregado = true;
+        emit();
+        return;
       }
+      void buscarDados();
     });
     return () => {
       listeners.delete(sync);
@@ -157,27 +193,24 @@ export function useEstoque() {
     };
   }, []);
 
-  const addCategoria = useCallback(
-    async (nome: string, tipo: TipoCategoria, template: string) => {
-      const { data: user } = await supabase.auth.getUser();
-      const { data: row, error } = await supabase
-        .from("categorias")
-        .insert({
-          nome: nome.trim(),
-          tipo,
-          template: template.trim() || TEMPLATE_PADRAO,
-          user_id: user.user?.id as string,
-        })
-        .select()
-        .single();
-      if (error || !row) throw error ?? new Error("Falha ao criar categoria");
-      const cat = mapCategoria(row as LinhaCategoria);
-      cache = { ...cache, categorias: [...cache.categorias, cat] };
-      emit();
-      return cat;
-    },
-    [],
-  );
+  const addCategoria = useCallback(async (nome: string, tipo: TipoCategoria, template: string) => {
+    const { data: user } = await supabase.auth.getUser();
+    const { data: row, error } = await supabase
+      .from("categorias")
+      .insert({
+        nome: nome.trim(),
+        tipo,
+        template: template.trim() || TEMPLATE_PADRAO,
+        user_id: user.user?.id as string,
+      })
+      .select()
+      .single();
+    if (error || !row) throw error ?? new Error("Falha ao criar categoria");
+    const cat = mapCategoria(row as LinhaCategoria);
+    cache = { ...cache, categorias: [...cache.categorias, cat] };
+    emit();
+    return cat;
+  }, []);
 
   const updateCategoria = useCallback(async (id: string, patch: Partial<Categoria>) => {
     cache = {
@@ -204,32 +237,10 @@ export function useEstoque() {
     await supabase.from("categorias").delete().eq("id", id);
   }, []);
 
-  const addConta = useCallback(async (conta: Omit<Conta, "id" | "criadoEm">) => {
-    const { data: user } = await supabase.auth.getUser();
-    const { data: row, error } = await supabase
-      .from("contas")
-      .insert({
-        categoria_id: conta.categoriaId,
-        email: conta.email,
-        senha: conta.senha,
-        perfil: conta.perfil,
-        pin: conta.pin,
-        status: conta.status,
-        obs: conta.obs,
-        user_id: user.user?.id as string,
-      })
-      .select()
-      .single();
-    if (error || !row) throw error ?? new Error("Falha ao salvar conta");
-    cache = { ...cache, contas: [...cache.contas, mapConta(row as LinhaConta)] };
-    emit();
-  }, []);
-
-  // Um único insert: o banco salva todas as linhas ou nenhuma.
   const addContas = useCallback(async (contas: Omit<Conta, "id" | "criadoEm">[]) => {
-    const { data: user, error: erroUsuario } = await supabase.auth.getUser();
-    if (erroUsuario || !user.user) throw erroUsuario ?? new Error("Sessão expirada");
-    const userId = user.user.id;
+    if (contas.length === 0) return [];
+    const { data: user } = await supabase.auth.getUser();
+    const userId = user.user?.id as string;
     const { data: rows, error } = await supabase
       .from("contas")
       .insert(
@@ -245,10 +256,20 @@ export function useEstoque() {
         })),
       )
       .select();
-    if (error || !rows) throw error ?? new Error("Falha ao importar contas");
-    cache = { ...cache, contas: [...cache.contas, ...(rows as LinhaConta[]).map(mapConta)] };
+    if (error || !rows) throw error ?? new Error("Falha ao salvar conta");
+    const novas = (rows as LinhaConta[]).map(mapConta);
+    cache = { ...cache, contas: [...cache.contas, ...novas] };
     emit();
+    return novas;
   }, []);
+
+  const addConta = useCallback(
+    async (conta: Omit<Conta, "id" | "criadoEm">) => {
+      const [nova] = await addContas([conta]);
+      return nova;
+    },
+    [addContas],
+  );
 
   const updateConta = useCallback(async (id: string, patch: Partial<Conta>) => {
     cache = {
