@@ -225,6 +225,31 @@ export function useEstoque() {
     emit();
   }, []);
 
+  // Um único insert: o banco salva todas as linhas ou nenhuma.
+  const addContas = useCallback(async (contas: Omit<Conta, "id" | "criadoEm">[]) => {
+    const { data: user, error: erroUsuario } = await supabase.auth.getUser();
+    if (erroUsuario || !user.user) throw erroUsuario ?? new Error("Sessão expirada");
+    const userId = user.user.id;
+    const { data: rows, error } = await supabase
+      .from("contas")
+      .insert(
+        contas.map((conta) => ({
+          categoria_id: conta.categoriaId,
+          email: conta.email,
+          senha: conta.senha,
+          perfil: conta.perfil,
+          pin: conta.pin,
+          status: conta.status,
+          obs: conta.obs,
+          user_id: userId,
+        })),
+      )
+      .select();
+    if (error || !rows) throw error ?? new Error("Falha ao importar contas");
+    cache = { ...cache, contas: [...cache.contas, ...(rows as LinhaConta[]).map(mapConta)] };
+    emit();
+  }, []);
+
   const updateConta = useCallback(async (id: string, patch: Partial<Conta>) => {
     cache = {
       ...cache,
@@ -257,6 +282,7 @@ export function useEstoque() {
     updateCategoria,
     removeCategoria,
     addConta,
+    addContas,
     updateConta,
     removeConta,
   };
